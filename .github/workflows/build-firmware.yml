@@ -1,0 +1,155 @@
+name: Build Tenhot firmware
+
+on:
+  push:
+    branches:
+      - openwrt-21.02
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - '.github/ISSUE_TEMPLATE/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Keep only the latest build for each branch.
+concurrency:
+  group: firmware-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.device }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - device: tenhot-wr6000k
+            subtarget: mt7986
+            profile: tenhot_wr6000k
+          - device: tenhot-wr3000k-v2
+            subtarget: mt7981
+            profile: tenhot_wr3000k-v2
+    env:
+      TZ: Asia/Shanghai
+      DEVICE: ${{ matrix.device }}
+      SUBTARGET: ${{ matrix.subtarget }}
+      PROFILE: ${{ matrix.profile }}
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Prepare build environment
+        run: |
+          mkdir -p ci-logs
+          # Only remove unused preinstalled SDKs on this disposable cloud runner.
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache /usr/local/share/powershell
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            antlr3 asciidoc autoconf automake autopoint binutils bison \
+            build-essential bzip2 ca-certificates ccache clang cmake cpio curl \
+            device-tree-compiler ecj fastjar file flex g++-multilib gawk \
+            gcc-multilib gettext git gperf help2man intltool libelf-dev \
+            libglib2.0-dev libgmp-dev libltdl-dev libmpc-dev libmpfr-dev \
+            libncurses-dev libreadline-dev libssl-dev libtool lld msmtp \
+            ninja-build p7zip-full patch pkgconf python3 python3-distutils \
+            python3-docutils python3-ply qemu-utils re2c rsync scons \
+            squashfs-tools subversion swig texinfo time uglifyjs unzip \
+            wget xmlto xxd xsltproc zlib1g-dev zstd
+          df -h . | tee ci-logs/disk-before.txt
+          available_kb=$(df -Pk . | awk 'NR == 2 { print $4 }')
+          if (( available_kb < 30 * 1024 * 1024 )); then
+            echo '::error::Less than 30 GiB free disk space for the firmware build.'
+            exit 1
+          fi
+
+      - name: Install feeds and configure device
+        run: |
+          ./scripts/feeds update -a 2>&1 | tee ci-logs/feeds-update.log
+          ./scripts/feeds install -a 2>&1 | tee ci-logs/feeds-install.log
+          cp "defconfig/${DEVICE}.config" .config
+          make defconfig 2>&1 | tee ci-logs/defconfig.log
+          # Catch a missing/renamed device before spending hours building.
+          grep -Fx "CONFIG_TARGET_DEVICE_mediatek_${SUBTARGET}_DEVICE_${PROFILE}=y" .config
+          cp .config ci-logs/build.config
+          ./scripts/diffconfig.sh > ci-logs/diffconfig
+          {
+            echo "device=${DEVICE}"
+            echo "source_commit=$(git rev-parse HEAD)"
+            echo "run_url=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo "built_at=$(date --iso-8601=seconds)"
+            for feed in feeds/*; do
+              if [[ -d "$feed/.git" || -f "$feed/.git" ]]; then
+                echo "feed_$(basename "$feed")=$(git -C "$feed" rev-parse HEAD)"
+              fi
+            done
+          } > ci-logs/build-info.txt
+          cp feeds.conf.default ci-logs/feeds.conf.default
+
+      - name: Download sources
+        run: |
+          make -j8 download 2>&1 | tee ci-logs/download.log || \
+            make -j1 download V=s 2>&1 | tee ci-logs/download-retry.log
+
+      - name: Compile firmware
+        run: |
+          # A serial retry gives a readable error if parallel compilation fails.
+          make -j"$(nproc)" 2>&1 | tee ci-logs/build.log || \
+            make -j1 V=s 2>&1 | tee ci-logs/build-retry.log
+
+      - name: Package firmware and software packages
+        run: |
+          target_dir="bin/targets/mediatek/${SUBTARGET}"
+          for image in factory sysupgrade; do
+            if ! compgen -G "${target_dir}/*-${PROFILE}-squashfs-${image}.bin" > /dev/null; then
+              echo "::error::Missing ${image} firmware for ${DEVICE}."
+              exit 1
+            fi
+          done
+          mkdir -p artifacts "$target_dir/build-metadata"
+          cp ci-logs/build.config ci-logs/diffconfig ci-logs/build-info.txt \
+            ci-logs/feeds.conf.default "$target_dir/build-metadata/"
+          archive="${DEVICE}-${GITHUB_SHA:0:12}-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}.tar.gz"
+          # bin/ contains target images, manifests, checksums and built .ipk packages.
+          tar -czf "artifacts/${archive}" -C bin .
+          (cd artifacts && sha256sum "$archive" > "${archive}.sha256")
+          {
+            echo "### ${DEVICE} firmware"
+            echo "Source commit: ${GITHUB_SHA}"
+            echo
+            echo 'Download the firmware artifact below and extract the ZIP, then the tar.gz.'
+            echo 'The archive includes bin/ contents and build-metadata under the target directory.'
+            echo
+            echo 'Firmware files:'
+            echo '```text'
+            find "$target_dir" -maxdepth 1 -type f -name '*.bin' -printf '%f\n'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload firmware
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: firmware-${{ matrix.device }}-${{ github.run_number }}-${{ github.run_attempt }}
+          path: artifacts/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+      - name: Upload build logs
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: logs-${{ matrix.device }}-${{ github.run_number }}-${{ github.run_attempt }}
+          path: ci-logs/
+          if-no-files-found: warn
+          retention-days: 7
