@@ -151,6 +151,7 @@ platform_do_upgrade() {
 	ruijie,rg-x60-pro* |\
 	tplink,tl-xdr608* |\
 	zyxel,ex5700 |\
+	tenhot,wr6000k |\
 	*snand*)
 		nand_do_upgrade "$1"
 		;;
@@ -181,6 +182,7 @@ platform_check_image() {
 	bananapi,bpi-r3mini* |\
 	netcore,n60 |\
 	ruijie,rg-x60-pro* |\
+	tenhot,wr6000k |\
 	*snand* |\
 	glinet,gl-mt6000 |\
 	jdcloud,re-cp-03 |\

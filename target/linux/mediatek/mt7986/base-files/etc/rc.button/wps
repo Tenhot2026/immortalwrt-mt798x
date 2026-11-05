@@ -1,0 +1,30 @@
+#!/bin/sh
+
+[ "$ACTION" = "released" ] || exit 0
+
+. /lib/functions.sh
+
+[ "$(board_name)" = "tenhot,wr6000k" ] || exit 0
+command -v l1util >/dev/null 2>&1 || exit 0
+command -v iwpriv >/dev/null 2>&1 || exit 0
+
+for dev in $(l1util list); do
+	ifname="$(l1util get "$dev" main_ifname)"
+	[ -n "$ifname" ] || continue
+	[ -r "/sys/class/net/$ifname/flags" ] || continue
+	read -r flags < "/sys/class/net/$ifname/flags"
+	[ "$((flags & 1))" -ne 0 ] || continue
+
+	# Advertise the existing AP configuration as a WPS registrar.
+	# WscMode=2 selects push-button pairing; the driver handles its timeout.
+	if iwpriv "$ifname" set WscConfMode=4 &&
+	   iwpriv "$ifname" set WscConfStatus=2 &&
+	   iwpriv "$ifname" set WscMode=2 &&
+	   iwpriv "$ifname" set WscGetConf=1; then
+		logger -t wps "Started push-button pairing on $ifname"
+	else
+		logger -t wps "Failed to start push-button pairing on $ifname"
+	fi
+done
+
+exit 0

@@ -552,3 +552,22 @@ define Device/zyxel_ex5700
     IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
 endef
 TARGET_DEVICES += zyxel_ex5700
+
+# Tenhot devices with a single UBI partition on NMBM.
+define Device/tenhot_wr6000k
+  DEVICE_VENDOR := Tenhot
+  DEVICE_MODEL := WR6000K
+  DEVICE_DTS := mt7986a-tenhot-wr6000k
+  DEVICE_DTS_DIR := $(DTS_DIR)/mediatek
+  SUPPORTED_DEVICES := tenhot,wr6000k
+  DEVICE_PACKAGES := uboot-envtools kmod-mt_wifi luci-app-mtwifi-cfg
+  UBINIZE_OPTS := -E 5
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  IMAGE_SIZE := 114816k
+  KERNEL_IN_UBI := 1
+  IMAGES += factory.bin
+  IMAGE/factory.bin := append-ubi | check-size $$$$(IMAGE_SIZE)
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+endef
+TARGET_DEVICES += tenhot_wr6000k

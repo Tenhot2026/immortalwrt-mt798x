@@ -9,6 +9,9 @@ mediatek_setup_interfaces()
 	local board="$1"
 
 	case $board in
+	tenhot,wr6000k)
+		ucidef_set_interfaces_lan_wan "lan1 lan2 lan3" eth1
+		;;
 	*fpga*)
 		ucidef_set_interfaces_lan_wan "eth0" "eth1"
 		ucidef_add_switch "switch0" \
@@ -63,6 +66,12 @@ mediatek_setup_macs()
 	local part_name="Factory"
 	
 	case $board in
+	tenhot,wr6000k)
+		local wifi_mac="$(mtd_get_mac_binary Factory 0x4)"
+		lan_mac=$(macaddr_add "$wifi_mac" -1)
+		wan_mac=$(macaddr_add "$wifi_mac" -2)
+		label_mac=$wan_mac
+		;;
 	*netcore,n60*)
 		wifi_mac=$(mtd_get_mac_binary $part_name 4)
 		lan_mac="$(macaddr_add $wifi_mac -1)"

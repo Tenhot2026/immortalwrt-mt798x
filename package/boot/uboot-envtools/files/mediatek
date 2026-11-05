@@ -13,6 +13,10 @@ touch /etc/config/ubootenv
 board=$(board_name)
 
 case "$board" in
+tenhot,wr6000k)
+	env_mtd=$(find_mtd_index "u-boot-env")
+	[ -n "$env_mtd" ] && ubootenv_add_uci_config "/dev/mtd$env_mtd" "0x0" "0x80000" "0x20000"
+	;;
 cmcc,rax3000m-emmc |\
 cmcc,xr30-emmc |\
 glinet,gl-mt6000 |\
