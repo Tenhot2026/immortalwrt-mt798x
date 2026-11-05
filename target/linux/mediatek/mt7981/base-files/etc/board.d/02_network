@@ -10,6 +10,9 @@ mediatek_setup_interfaces()
 	local board="$1"
 
 	case $board in
+	tenhot,wr3000k-v2)
+		ucidef_set_interfaces_lan_wan "lan1 lan2 lan3" wan
+		;;
 	*fpga*)
 		ucidef_set_interfaces_lan_wan "eth0" "eth1"
 		ucidef_add_switch "switch0" \
@@ -150,6 +153,12 @@ mediatek_setup_macs()
 	local wan_mac_offset="0x24"
 
 	case $board in
+	tenhot,wr3000k-v2)
+		local wifi_mac="$(mtd_get_mac_binary factory 0x4)"
+		lan_mac=$(macaddr_add "$wifi_mac" -1)
+		wan_mac=$(macaddr_add "$wifi_mac" -2)
+		label_mac=$wan_mac
+		;;
 	*mt3000*)
 		wan_mac=$(mtd_get_mac_binary $part_name 0x0a)
 		lan_mac=$(macaddr_add "$wan_mac" 1)

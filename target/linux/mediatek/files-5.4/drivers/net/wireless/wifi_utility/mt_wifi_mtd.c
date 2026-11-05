@@ -5,6 +5,7 @@
 #include <linux/kernel.h>
 #include <linux/err.h>
 #include <linux/slab.h>
+#include <linux/string.h>
 #include <asm/io.h>
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/map.h>
@@ -23,6 +24,8 @@ int mt_mtd_write_nm_wifi(char *name, loff_t to, size_t len, const u_char *buf)
 	u_char *bak = NULL;
 
 	mtd = get_mtd_device_nm(name);
+	if (IS_ERR(mtd) && !strcmp(name, "Factory"))
+		mtd = get_mtd_device_nm("factory");
 	if (IS_ERR(mtd))
 		return -1;
 
@@ -83,6 +86,8 @@ int mt_mtd_read_nm_wifi(char *name, loff_t from, size_t len, u_char *buf)
 	struct mtd_info *mtd;
 
 	mtd = get_mtd_device_nm(name);
+	if (IS_ERR(mtd) && !strcmp(name, "Factory"))
+		mtd = get_mtd_device_nm("factory");
 	if (IS_ERR(mtd))
 		return -1;
 

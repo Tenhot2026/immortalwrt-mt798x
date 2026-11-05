@@ -4,7 +4,7 @@ uci -q get system.@imm_init[0] > "/dev/null" || uci -q add system imm_init > "/d
 
 if ! uci -q get system.@imm_init[0].lang > "/dev/null"; then
 	case "$(cat /tmp/sysinfo/board_name)" in
-	tenhot,wr6000k)
+	tenhot,wr3000k-v2|tenhot,wr6000k)
 		uci -q set luci.main.lang="zh_cn"
 		;;
 	*)
@@ -44,7 +44,7 @@ rm -f "/tmp/luci-indexcache"
 . /lib/functions/system.sh
 
 case "$(board_name)" in
-	tenhot,wr6000k) ;;
+	tenhot,wr3000k-v2|tenhot,wr6000k) ;;
 	*) exit 0 ;;
 esac
 
