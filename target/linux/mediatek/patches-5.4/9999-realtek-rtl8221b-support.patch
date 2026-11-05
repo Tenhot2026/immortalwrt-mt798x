@@ -1,0 +1,166 @@
+--- a/drivers/net/phy/realtek.c
++++ b/drivers/net/phy/realtek.c
+@@ -443,6 +443,143 @@
+ 	       rtlgen_supports_2_5gbps(phydev);
+ }
+ 
++/* RTL8221B SerDes setup and status decoding backported from Linux v6.12.
++ * Use the switching 2500BASE-X/SGMII mode: Linux 5.4 phylink does not
++ * support the rate matching needed by a fixed 2500BASE-X host interface.
++ */
++/* The MTK MDIO controller supports native Clause 45 transactions even
++ * when the PHY itself was enumerated through its Clause 22 ID.
++ */
++static int rtl8221b_read_mmd(struct phy_device *phydev, int devad, u16 regnum)
++{
++	return __mdiobus_read(phydev->mdio.bus, phydev->mdio.addr,
++			      MII_ADDR_C45 | (devad << 16) | regnum);
++}
++
++static int rtl8221b_write_mmd(struct phy_device *phydev, int devad, u16 regnum,
++			     u16 val)
++{
++	return __mdiobus_write(phydev->mdio.bus, phydev->mdio.addr,
++			       MII_ADDR_C45 | (devad << 16) | regnum, val);
++}
++
++/* Disable SerDes in-band negotiation for the PHY-managed SGMII MAC.
++ * The command sequence is from upstream rtl822x_config_inband().
++ */
++static int rtl8221b_disable_inband(struct phy_device *phydev)
++{
++	int ret, val;
++
++	ret = phy_write_mmd(phydev, MDIO_MMD_VEND1, 0x7588, 0x2);
++	if (ret < 0)
++		return ret;
++
++	ret = phy_write_mmd(phydev, MDIO_MMD_VEND1, 0x7589, 0x71d0);
++	if (ret < 0)
++		return ret;
++
++	ret = phy_write_mmd(phydev, MDIO_MMD_VEND1, 0x7587,
++			    BIT(1) | BIT(0));
++	if (ret < 0)
++		return ret;
++
++	return phy_read_mmd_poll_timeout(phydev, MDIO_MMD_VEND1, 0x7587,
++					val, !(val & BIT(0)), 500, 100000,
++					false);
++}
++
++static int rtl8221b_config_init(struct phy_device *phydev)
++{
++	int ret;
++
++	if (phydev->interface != PHY_INTERFACE_MODE_2500BASEX &&
++	    phydev->interface != PHY_INTERFACE_MODE_SGMII)
++		return -EINVAL;
++
++	ret = phy_write_mmd(phydev, MDIO_MMD_VEND1, 0x75f3, 0);
++	if (ret < 0)
++		return ret;
++
++	ret = phy_modify_mmd(phydev, MDIO_MMD_VEND1, 0x697a,
++			     GENMASK(5, 0), 0);
++	if (ret < 0)
++		return ret;
++
++	ret = phy_write_mmd(phydev, MDIO_MMD_VEND1, 0x6a04, 0x0503);
++	if (ret < 0)
++		return ret;
++
++	ret = phy_write_mmd(phydev, MDIO_MMD_VEND1, 0x6f10, 0xd455);
++	if (ret < 0)
++		return ret;
++
++	ret = phy_write_mmd(phydev, MDIO_MMD_VEND1, 0x6f11, 0x8020);
++	if (ret < 0)
++		return ret;
++
++	ret = rtl8221b_disable_inband(phydev);
++	if (ret < 0)
++		return ret;
++
++	/* The copper link may already be up when Linux changes the SerDes
++	 * mode. Apply the new mode by restarting negotiation even when the
++	 * advertised capabilities have not changed; genphy_config_aneg()
++	 * would otherwise leave the boot-time link untouched.
++	 */
++	if (phydev->autoneg == AUTONEG_ENABLE)
++		return genphy_restart_aneg(phydev);
++
++	return 0;
++}
++
++static int rtl8221b_read_status(struct phy_device *phydev)
++{
++	int ret, val;
++
++	ret = rtl8125_read_status(phydev);
++	if (ret < 0 || !phydev->link)
++		return ret;
++
++	/* Standard C22 status cannot represent the 2.5G copper speed. */
++	val = phy_read_paged(phydev, 0xa43, 0x12);
++	if (val < 0)
++		return val;
++
++	phydev->duplex = val & BIT(3) ? DUPLEX_FULL : DUPLEX_HALF;
++	switch (val & 0x0630) {
++	case 0x0000:
++		phydev->speed = SPEED_10;
++		break;
++	case 0x0010:
++		phydev->speed = SPEED_100;
++		break;
++	case 0x0020:
++		phydev->speed = SPEED_1000;
++		break;
++	case 0x0210:
++		phydev->speed = SPEED_2500;
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	/* Keep the MAC SerDes in the mode actually selected by the PHY. */
++	val = phy_read_mmd(phydev, MDIO_MMD_VEND1, 0x7580);
++	if (val < 0)
++		return val;
++
++	switch (val & GENMASK(5, 0)) {
++	case 0x02:
++		phydev->interface = PHY_INTERFACE_MODE_SGMII;
++		break;
++	case 0x16:
++		phydev->interface = PHY_INTERFACE_MODE_2500BASEX;
++		break;
++	}
++
++	return 0;
++}
++
+ static struct phy_driver realtek_drvs[] = {
+ 	{
+ 		PHY_ID_MATCH_EXACT(0x00008201),
+@@ -517,6 +654,19 @@
+ 		.config_init	= &rtl8211f_config_init,
+ 		.ack_interrupt	= &rtl8211f_ack_interrupt,
+ 		.config_intr	= &rtl8211f_config_intr,
++		.suspend	= genphy_suspend,
++		.resume		= genphy_resume,
++		.read_page	= rtl821x_read_page,
++		.write_page	= rtl821x_write_page,
++	}, {
++		PHY_ID_MATCH_EXACT(0x001cc849),
++		.name		= "RTL8221B-VB-CG 2.5Gbps PHY",
++		.get_features	= rtl8125_get_features,
++		.config_init	= rtl8221b_config_init,
++		.read_mmd	= rtl8221b_read_mmd,
++		.write_mmd	= rtl8221b_write_mmd,
++		.config_aneg	= rtl8125_config_aneg,
++		.read_status	= rtl8221b_read_status,
+ 		.suspend	= genphy_suspend,
+ 		.resume		= genphy_resume,
+ 		.read_page	= rtl821x_read_page,

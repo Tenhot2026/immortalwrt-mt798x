@@ -7,6 +7,7 @@
  *
  */
 
+#include <linux/delay.h>
 #include <linux/mfd/syscon.h>
 #include <linux/of.h>
 #include <linux/regmap.h>
@@ -69,15 +70,24 @@ int mtk_sgmii_setup_mode_an(struct mtk_sgmii *ss, unsigned int id)
 int mtk_sgmii_setup_mode_force(struct mtk_sgmii *ss, unsigned int id,
 			       const struct phylink_link_state *state)
 {
-	unsigned int val;
+	unsigned int val, speed;
+	bool rate_changed;
 
 	if (!ss->regmap[id])
 		return -EINVAL;
 
+	speed = state->interface == PHY_INTERFACE_MODE_2500BASEX ?
+		RG_PHY_SPEED_3_125G : RG_PHY_SPEED_1_25G;
 	regmap_read(ss->regmap[id], ss->ana_rgc3, &val);
-	val &= ~RG_PHY_SPEED_MASK;
-	if (state->interface == PHY_INTERFACE_MODE_2500BASEX)
-		val |= RG_PHY_SPEED_3_125G;
+	rate_changed = (val & RG_PHY_SPEED_MASK) != speed;
+	if (rate_changed) {
+		/* Recalibrate PHYA when switching 2500BASE-X and SGMII. */
+		regmap_update_bits(ss->regmap[id], SGMSYS_QPHY_PWR_STATE_CTRL,
+				   SGMII_PHYA_PWD, SGMII_PHYA_PWD);
+		regmap_update_bits(ss->regmap[id], SGMSYS_RESERVED_0,
+				   SGMII_SW_RESET, SGMII_SW_RESET);
+	}
+	val = (val & ~RG_PHY_SPEED_MASK) | speed;
 	regmap_write(ss->regmap[id], ss->ana_rgc3, val);
 
 	/* Disable SGMII AN */
@@ -111,7 +121,11 @@ int mtk_sgmii_setup_mode_force(struct mtk_sgmii *ss, unsigned int id,
 		regmap_update_bits(ss->regmap[id], SGMSYS_QPHY_WRAP_CTRL,
 				   SGMII_PN_SWAP_MASK, SGMII_PN_SWAP_TX_RX);
 
-	/* Release PHYA power down state */
+	/* mac_config holds a spinlock, so use a short busy wait here.
+	 * Clear the entire power register: residual 0x9 blocks traffic.
+	 */
+	if (rate_changed)
+		udelay(50);
 	regmap_write(ss->regmap[id], SGMSYS_QPHY_PWR_STATE_CTRL, 0);
 
 	return 0;

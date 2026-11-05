@@ -379,7 +379,9 @@ static void mtk_mac_config(struct phylink_config *config, unsigned int mode,
 		       0 : mac->id;
 
 		/* Setup SGMIISYS with the determined property */
-		if (state->interface != PHY_INTERFACE_MODE_SGMII)
+		/* PHY-managed SGMII needs forced PCS speed and duplex too. */
+		if (state->interface != PHY_INTERFACE_MODE_SGMII ||
+		    !phylink_autoneg_inband(mode))
 			err = mtk_sgmii_setup_mode_force(eth->sgmii, sid,
 							 state);
 		else if (phylink_autoneg_inband(mode))
