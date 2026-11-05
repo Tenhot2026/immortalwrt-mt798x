@@ -1,0 +1,142 @@
+#!/bin/sh
+
+. /lib/functions.sh
+. /lib/functions/system.sh
+
+MAC_OFFSET=$((0x4))
+
+usage() {
+	echo "Usage: $0 {get|set <wifi-mac>}"
+	echo "  get            Read factory-derived WAN, LAN and Wi-Fi base MACs"
+	echo "  set <wifi-mac> Write the Wi-Fi base MAC (xx:xx:xx:xx:xx:xx)"
+	echo "                 Update factory and network MACs"
+	echo "                 Reboot after a successful write"
+	exit 1
+}
+
+fail() {
+	echo "ERROR: $*" >&2
+	exit 1
+}
+
+valid_mac() {
+	printf '%s\n' "$1" | grep -qE '^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$' || return 1
+	[ "$1" != "00:00:00:00:00:00" ] || return 1
+	[ $((0x${1%%:*} & 1)) -eq 0 ]
+}
+
+read_mac() {
+	hexdump -v -n 6 -s "$MAC_OFFSET" -e '5/1 "%02x:" 1/1 "%02x"' "$device"
+}
+
+show_macs() {
+	local base="$1"
+	local lan wan
+	lan=$(macaddr_add "$base" -1)
+	wan=$(macaddr_add "$base" -2)
+	valid_mac "$lan" && valid_mac "$wan" || fail "Invalid derived LAN/WAN MAC"
+	echo "Wi-Fi EEPROM base ($partition offset 0x4): $base"
+	echo "LAN (lan1 lan2 lan3, Wi-Fi - 1): $lan"
+	echo "WAN ($wan_device, Wi-Fi - 2): $wan"
+}
+
+mac_to_bytes() {
+	local octet IFS=:
+	for octet in $1; do
+		printf '%b' "\\$(printf '%03o' "$((0x$octet))")" || return 1
+	done
+}
+
+set_device_mac() {
+	local section="$1" name mac
+	config_get name "$section" name
+	case "$name" in
+		br-lan|lan1|lan2|lan3) mac="$lan_mac" ;;
+		"$wan_device") mac="$wan_mac" ;;
+		*) return 0 ;;
+	esac
+	uci -q set "network.$section.macaddr=$mac" || network_failed=1
+}
+
+update_network_macs() {
+	local network_failed=0 section mac
+	if [ -f /etc/config/network ]; then
+		config_load network || return 1
+		config_foreach set_device_mac device
+		# Update legacy interface overrides too, when present.
+		for section in lan wan; do
+			uci -q get "network.$section.macaddr" >/dev/null || continue
+			case "$section" in
+				lan) mac="$lan_mac" ;;
+				wan) mac="$wan_mac" ;;
+			esac
+			uci -q set "network.$section.macaddr=$mac" || network_failed=1
+		done
+		[ "$network_failed" = 0 ] || return 1
+		uci -q commit network || return 1
+	fi
+	# Refresh cached board MACs without regenerating the user's network.
+	[ ! -x /etc/board.d/02_network ] || /etc/board.d/02_network
+}
+
+set_mac() {
+	local flags base old_base
+	local wan_mac lan_mac
+
+	valid_mac "$1" || fail "Invalid unicast Wi-Fi base MAC address"
+	base=$(printf '%s' "$1" | tr 'A-F' 'a-f')
+	lan_mac=$(macaddr_add "$base" -1)
+	wan_mac=$(macaddr_add "$base" -2)
+	valid_mac "$lan_mac" && valid_mac "$wan_mac" || fail "Invalid derived LAN/WAN MAC"
+	[ "$(id -u)" = 0 ] || fail "Root privileges required"
+	[ -b "/dev/mtdblock$index" ] || fail "Factory MTD block device not found"
+	[ -z "$(uci -q changes network)" ] || fail "Commit or revert pending network changes first"
+
+	flags=$(cat "/sys/class/mtd/mtd$index/flags") || fail "Cannot read MTD flags"
+	case "$flags" in 0x[0-9a-fA-F]*) ;; *) fail "Invalid MTD flags" ;; esac
+	[ $((flags & 0x400)) -ne 0 ] || fail "Factory is read-only; boot firmware with writable factory support"
+
+	mkdir /var/lock/factory-mac-tool.lock 2>/dev/null || fail "Another factory MAC operation holds the lock"
+	trap 'rmdir /var/lock/factory-mac-tool.lock' EXIT
+	trap 'exit 1' HUP INT TERM
+
+	old_base=$(read_mac) || fail "Cannot read current MAC"
+	if [ "$old_base" != "$base" ]; then
+		# mtdblock preserves the erase block around this partial write.
+		# fsync flushes this device only; verify through the raw MTD device.
+		mac_to_bytes "$base" | dd of="/dev/mtdblock$index" bs=1 \
+			seek="$MAC_OFFSET" count=6 conv=notrunc,fsync 2>/dev/null || fail "Factory write failed"
+		[ "$(read_mac)" = "$base" ] || fail "Factory MAC verification failed"
+	else
+		echo "Factory MAC already matches; skipping flash write"
+	fi
+	update_network_macs || fail "Factory MAC stored, but network configuration update failed"
+	show_macs "$base"
+	echo "OK: Factory and network MACs updated (reboot required)"
+}
+
+case "$1" in
+	get) [ "$#" -eq 1 ] || usage ;;
+	set) [ "$#" -eq 2 ] || usage ;;
+	*) usage ;;
+esac
+
+case "$(board_name)" in
+	tenhot,wr3000k-v2) partition=factory; wan_device=wan ;;
+	tenhot,wr6000k) partition=Factory; wan_device=eth1 ;;
+	*) fail "Unsupported device" ;;
+esac
+
+index=$(find_mtd_index "$partition")
+case "$index" in ''|*[!0-9]*) fail "Factory partition not found" ;; esac
+device="/dev/mtd$index"
+[ -c "$device" ] || fail "Factory MTD character device not found"
+
+case "$1" in
+	get)
+		base=$(read_mac) || fail "Cannot read factory MAC"
+		valid_mac "$base" || fail "Invalid factory MAC"
+		show_macs "$base"
+		;;
+	set) set_mac "$2" ;;
+esac
