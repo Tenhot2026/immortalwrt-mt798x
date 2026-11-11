@@ -3,14 +3,7 @@
 uci -q get system.@imm_init[0] > "/dev/null" || uci -q add system imm_init > "/dev/null"
 
 if ! uci -q get system.@imm_init[0].lang > "/dev/null"; then
-	case "$(cat /tmp/sysinfo/board_name)" in
-	tenhot,wr3000k-v2|tenhot,wr6000k)
-		uci -q set luci.main.lang="zh_cn"
-		;;
-	*)
-		uci -q set luci.main.lang="auto"
-		;;
-	esac
+	uci -q set luci.main.lang="auto"
 	uci -q commit luci
 
 	uci -q set system.@imm_init[0].lang="1"
