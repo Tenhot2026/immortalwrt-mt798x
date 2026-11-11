@@ -4,7 +4,7 @@
 #include "mt7981.dtsi"
 
 / {
-	model = "Tenhot WR3000K_V2";
+	model = "WR3000K_V2";
 	compatible = "tenhot,wr3000k-v2", "mediatek,mt7981";
 
 	aliases {

@@ -9,7 +9,7 @@
 #include "mt7986a.dtsi"
 
 / {
-	model = "Tenhot WR6000K";
+	model = "WR6000K";
 	compatible = "tenhot,wr6000k", "mediatek,mt7986a";
 
 	aliases {
