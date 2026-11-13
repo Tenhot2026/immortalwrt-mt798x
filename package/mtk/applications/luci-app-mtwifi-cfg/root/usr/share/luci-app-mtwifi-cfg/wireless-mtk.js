@@ -5,6 +5,7 @@
 'require fs';
 'require ui';
 'require rpc';
+'require request';
 'require uci';
 'require form';
 'require network';
@@ -12,6 +13,7 @@
 'require tools.widgets as widgets';
 
 var isReadonlyView = !L.hasViewPermission();
+var mtwifiWpsSessions = {};
 
 function count_changes(section_id) {
 	var changes = ui.changes.changes, n = 0;
@@ -775,7 +777,12 @@ return view.extend({
 	load: function() {
 		return Promise.all([
 			uci.changes(),
-			uci.load('wireless')
+			uci.load('wireless'),
+			// Themes cache translations by the LuCI version, even after app upgrades.
+			request.get(L.url('admin/translations', document.documentElement.lang), { cache: false }).then(function(res) {
+				if (res.ok)
+					Object.assign(window.TR || (window.TR = {}), JSON.parse(res.text().replace(/^window\.TR\s*=\s*/, '')));
+			}).catch(function() {})
 		]);
 	},
 
@@ -1444,6 +1451,69 @@ return view.extend({
 
 
 				var crypto_modes = [];
+
+				if (hwtype == 'mtwifi' && band != '6g') {
+					var wpsSection = radioNet.getName();
+					var wps = mtwifiWpsSessions[wpsSection] || (mtwifiWpsSessions[wpsSection] = {});
+					o = ss.taboption('encryption', form.Button, '_mtwifi_wps', _('WPS push-button pairing'),
+						_('Start a 120-second pairing window using the applied settings of this SSID. Requires a visible WPA2-PSK or WPA2 mixed network.'));
+					o.inputtitle = _('Start WPS pairing');
+					o.inputstyle = 'action';
+					o.readonly = isReadonlyView || !radioNet.isUp();
+					o.write = function() {};
+					add_dependency_permutations(o, { mode: ['ap'], encryption: ['psk2', 'psk-mixed', 'sae-mixed'] });
+					o.renderWidget = function() {
+						var widget = form.Button.prototype.renderWidget.apply(this, arguments);
+						var button = widget.querySelector('button');
+						var status = E('div', { 'role': 'status', 'aria-live': 'polite', 'style': 'margin-top:.5em' });
+						widget.appendChild(status);
+						wps.update = L.bind(function() {
+							var remaining = Math.max(0, Math.ceil(((wps.expires || 0) - Date.now()) / 1000));
+							button.disabled = this.readonly || !!wps.busy;
+							button.textContent = remaining ? _('Stop WPS pairing') : _('Start WPS pairing');
+							status.textContent = wps.error || (remaining
+								? _('WPS pairing window: %d seconds remaining. Connect your WPS client now.').format(remaining)
+								: wps.message || (wps.expires ? _('The WPS pairing window has ended.') : ''));
+						}, this);
+						wps.update();
+						var update = wps.update;
+						var refresh = function() {
+							if (!document.documentElement.contains(button))
+								poll.remove(refresh);
+							else
+								update();
+						};
+						poll.add(refresh, 1);
+						return widget;
+					};
+					o.onclick = function() {
+						if (this.readonly || wps.busy)
+							return;
+
+						var action = wps.expires > Date.now() ? 'stop' : 'start';
+						wps.error = null;
+						if (action == 'start' && ui.changes.changes && (ui.changes.changes.wireless || []).length) {
+							wps.error = _('Save and apply pending wireless changes before starting WPS.');
+							wps.update();
+							return;
+						}
+
+						wps.busy = true;
+						wps.update();
+						return fs.exec('/usr/libexec/mtwifi-wps', [wpsSection, action]).then(function(res) {
+							if (res.code !== 0)
+								throw new Error(_((res.stderr || '').trim() || 'The wireless driver rejected the WPS request.'));
+
+							wps.expires = action == 'start' ? Date.now() + 120000 : 0;
+							wps.message = action == 'stop' ? _('WPS pairing stopped.') : null;
+						}).catch(function(err) {
+							wps.error = _('Unable to start or stop WPS pairing: %s').format(err.message);
+						}).finally(function() {
+							wps.busy = false;
+							wps.update();
+						});
+					};
+				}
 
 				if (hwtype == 'mac80211') {
 					var has_supplicant = L.hasSystemFeature('wpasupplicant'),

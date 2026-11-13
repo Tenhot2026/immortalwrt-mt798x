@@ -39,3 +39,54 @@ msgstr "无线网络设置错误"
 
 msgid "At least one MBSSID needs to be reserved"
 msgstr "至少需要保留1个MBSSID"
+
+msgid "WPS push-button pairing"
+msgstr "WPS 按钮配对"
+
+msgid "Start WPS pairing"
+msgstr "开始 WPS 配对"
+
+msgid "Start a 120-second pairing window using the applied settings of this SSID. Requires a visible WPA2-PSK or WPA2 mixed network."
+msgstr "使用此 SSID 已应用的配置开启 120 秒配对窗口。需要开启 SSID 广播，并使用 WPA2-PSK 或 WPA2 混合加密。"
+
+msgid "Save and apply pending wireless changes before starting WPS."
+msgstr "请先保存并应用待处理的无线配置，再启动 WPS。"
+
+msgid "The wireless driver rejected the WPS request."
+msgstr "无线驱动拒绝了 WPS 请求。"
+
+msgid "WPS pairing started. Connect your WPS client within 120 seconds."
+msgstr "WPS 配对已启动，请在 120 秒内连接支持 WPS 的客户端。"
+
+msgid "Unable to start WPS pairing: %s"
+msgstr "无法启动 WPS 配对：%s"
+
+msgid "Stop WPS pairing"
+msgstr "停止 WPS 配对"
+
+msgid "WPS pairing window: %d seconds remaining. Connect your WPS client now."
+msgstr "WPS 配对窗口剩余 %d 秒，请连接支持 WPS 的客户端。"
+
+msgid "The WPS pairing window has ended."
+msgstr "WPS 配对窗口已结束。"
+
+msgid "WPS pairing stopped."
+msgstr "WPS 配对已停止。"
+
+msgid "Unable to start or stop WPS pairing: %s"
+msgstr "无法启动或停止 WPS 配对：%s"
+
+msgid "Invalid wireless section."
+msgstr "无线接口参数无效。"
+
+msgid "The MTK access point is not running."
+msgstr "MTK 无线接入点尚未运行。"
+
+msgid "The wireless interface is down."
+msgstr "无线接口已关闭。"
+
+msgid "WPS requires WPA2-PSK or WPA2 mixed encryption with AES support."
+msgstr "WPS 需要使用支持 AES 的 WPA2-PSK 或 WPA2 混合加密。"
+
+msgid "WPS is unavailable on a hidden SSID."
+msgstr "隐藏 SSID 时无法使用 WPS，请先开启 SSID 广播。"

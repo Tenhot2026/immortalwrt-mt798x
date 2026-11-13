@@ -1,0 +1,75 @@
+#!/usr/bin/lua
+
+local fs = require "nixio.fs"
+local util = require "luci.util"
+local uci = require("luci.model.uci").cursor()
+
+local function fail(message)
+	io.stderr:write(message .. "\n")
+	os.exit(1)
+end
+
+local section = arg[1]
+local action = arg[2] or "start"
+if (#arg ~= 1 and #arg ~= 2) or not section:match("^[%w_]+$") or
+   (action ~= "start" and action ~= "stop") then
+	fail("Invalid wireless section.")
+end
+
+-- Resolve the running interface on the server, including secondary SSIDs.
+-- Never accept an interface name or command from the browser.
+local status = util.ubus("network.wireless", "status", {}) or {}
+local ifname, config
+for device, radio in pairs(status) do
+	if uci:get("wireless", device, "type") == "mtwifi" and
+	   radio.up and not radio.pending and
+	   uci:get("wireless", device, "band") ~= "6g" then
+		for _, iface in ipairs(radio.interfaces or {}) do
+			if iface.section == section then
+				ifname, config = iface.ifname, iface.config
+			end
+		end
+	end
+end
+
+if not ifname or not ifname:match("^ra[xiyez]?%d+$") or
+   type(config) ~= "table" or config.mode ~= "ap" then
+	fail("The MTK access point is not running.")
+end
+
+local flags = tonumber(fs.readfile("/sys/class/net/" .. ifname .. "/flags"))
+if not flags or flags % 2 ~= 1 then
+	fail("The wireless interface is down.")
+end
+
+local function run(command)
+	if os.execute("/usr/sbin/iwpriv " .. util.shellquote(ifname) ..
+		" set " .. util.shellquote(command) .. " >/dev/null 2>&1") ~= 0 then
+		fail("The wireless driver rejected the WPS request.")
+	end
+end
+
+if action == "stop" then
+	run("WscStop=1")
+	print("WPS pairing stopped on " .. ifname .. ".")
+	os.exit(0)
+end
+
+local encryption = config.encryption or ""
+local auth, cipher = encryption:match("^([^+]+)%+(.+)$")
+auth = auth or encryption
+if (auth ~= "psk2" and auth ~= "psk-mixed" and auth ~= "sae-mixed") or
+   (cipher and cipher ~= "auto" and cipher ~= "ccmp" and cipher ~= "aes" and
+	 cipher ~= "tkip+ccmp" and cipher ~= "tkip+aes") then
+	fail("WPS requires WPA2-PSK or WPA2 mixed encryption with AES support.")
+end
+if config.hidden == true or config.hidden == 1 or config.hidden == "1" then
+	fail("WPS is unavailable on a hidden SSID.")
+end
+
+local commands = { "WscConfMode=4", "WscConfStatus=2", "WscMode=2", "WscGetConf=1" }
+for _, command in ipairs(commands) do
+	run(command)
+end
+
+print("WPS pairing started on " .. ifname .. ".")

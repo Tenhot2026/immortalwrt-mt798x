@@ -1,0 +1,13 @@
+{
+	"luci-mod-network-config": {
+		"description": "Allow MTK WPS pairing from wireless configuration",
+		"write": {
+			"ubus": {
+				"file": [ "exec" ]
+			},
+			"file": {
+				"/usr/libexec/mtwifi-wps": [ "exec" ]
+			}
+		}
+	}
+}
