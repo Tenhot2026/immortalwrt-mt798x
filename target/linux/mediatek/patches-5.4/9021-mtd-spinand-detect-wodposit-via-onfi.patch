@@ -1,0 +1,140 @@
+diff --git a/drivers/mtd/nand/spi/core.c b/drivers/mtd/nand/spi/core.c
+index 8896809..c4c0da5 100644
+--- a/drivers/mtd/nand/spi/core.c
++++ b/drivers/mtd/nand/spi/core.c
+@@ -13,6 +13,7 @@
+ #include <linux/jiffies.h>
+ #include <linux/kernel.h>
+ #include <linux/module.h>
++#include <linux/mtd/onfi.h>
+ #include <linux/mtd/spinand.h>
+ #include <linux/of.h>
+ #include <linux/slab.h>
+@@ -879,6 +880,116 @@ static int spinand_id_detect(struct spinand_device *spinand)
+ 	return ret;
+ }
+ 
++#define SPINAND_ONFI_COPIES	3
++
++static int spinand_onfi_read_otp_page(struct spinand_device *spinand,
++				     unsigned int page, void *buf, size_t len)
++{
++	struct spi_mem_op load = SPINAND_PAGE_READ_OP(page);
++	struct spi_mem_op read =
++		SPINAND_PAGE_READ_FROM_CACHE_OP(false, 0, 1, buf, len);
++	int ret, restore_ret;
++	u8 cfg;
++
++	ret = spinand_read_reg_op(spinand, REG_CFG, &cfg);
++	if (ret)
++		return ret;
++
++	ret = spinand_write_reg_op(spinand, REG_CFG, cfg | CFG_OTP_ENABLE);
++	if (ret)
++		goto restore_cfg;
++
++	ret = spi_mem_exec_op(spinand->spimem, &load);
++	if (ret)
++		goto restore_cfg;
++
++	ret = spinand_wait(spinand, NULL);
++	if (ret)
++		goto restore_cfg;
++
++	ret = spi_mem_exec_op(spinand->spimem, &read);
++
++restore_cfg:
++	restore_ret = spinand_write_reg_op(spinand, REG_CFG, cfg);
++	return ret ?: restore_ret;
++}
++
++/* Use the same CRC polynomial as raw NAND ONFI parameter pages. */
++static u16 spinand_onfi_crc16(u16 crc, const u8 *data, size_t len)
++{
++	int bit;
++
++	while (len--) {
++		crc ^= *data++ << 8;
++		for (bit = 0; bit < 8; bit++)
++			crc = (crc << 1) ^ ((crc & 0x8000) ? 0x8005 : 0);
++	}
++
++	return crc;
++}
++
++static int spinand_onfi_match(struct spinand_device *spinand,
++			      const struct nand_onfi_params *p)
++{
++	static const u8 wodposit_id[] = { 0xa5, 0xa0, 0x81 };
++	struct device *dev = &spinand->spimem->spi->dev;
++
++	dev_info(dev, "ONFI params found: manufacturer=\"%.12s\", model=\"%.20s\"\n",
++		 p->manufacturer, p->model);
++
++	/* Some Wodposit chips have the manufacturer programmed as Wooposit. */
++	if (strncmp(p->manufacturer, "Wodposit", 8) &&
++	    strncmp(p->manufacturer, "Wooposit", 8))
++		return -ENOTSUPP;
++
++	if (strncmp(p->model, "SGM7000I-S24W1GH", 16) &&
++	    strncmp(p->model, "SGM7000I-S24W2GH", 16) &&
++	    strncmp(p->model, "SGM7000I-S24W4GH", 16))
++		return -ENOTSUPP;
++
++	memcpy(spinand->id.data, wodposit_id, sizeof(wodposit_id));
++	return spinand_manufacturer_match(spinand,
++					  SPINAND_READID_METHOD_OPCODE_DUMMY);
++}
++
++static int spinand_onfi_detect(struct spinand_device *spinand)
++{
++	static const unsigned int pages[] = { 0x0, 0x1, 0x4 };
++	struct nand_onfi_params *params;
++	size_t len = sizeof(*params) * SPINAND_ONFI_COPIES;
++	unsigned int i, j;
++	int ret = -ENOTSUPP;
++
++	params = kmalloc(len, GFP_KERNEL);
++	if (!params)
++		return -ENOMEM;
++
++	for (i = 0; i < ARRAY_SIZE(pages); i++) {
++		if (spinand_onfi_read_otp_page(spinand, pages[i], params, len))
++			continue;
++
++		for (j = 0; j < SPINAND_ONFI_COPIES; j++) {
++			const struct nand_onfi_params *p = &params[j];
++			u16 crc;
++
++			if (memcmp(p->sig, "ONFI", 4))
++				continue;
++
++			crc = spinand_onfi_crc16(ONFI_CRC_BASE, (const u8 *)p,
++						offsetof(struct nand_onfi_params, crc));
++			if (crc != le16_to_cpu(p->crc))
++				continue;
++
++			ret = spinand_onfi_match(spinand, p);
++			goto out;
++		}
++	}
++
++out:
++	kfree(params);
++	return ret;
++}
++
+ static int spinand_manufacturer_init(struct spinand_device *spinand)
+ {
+ 	if (spinand->manufacturer->ops->init)
+@@ -1003,7 +1114,9 @@ static int spinand_detect(struct spinand_device *spinand)
+ 	if (ret)
+ 		return ret;
+ 
+-	ret = spinand_id_detect(spinand);
++	ret = spinand_onfi_detect(spinand);
++	if (ret)
++		ret = spinand_id_detect(spinand);
+ 	if (ret) {
+ 		dev_err(dev, "unknown raw ID %*phN\n", SPINAND_MAX_ID_LEN,
+ 			spinand->id.data);
