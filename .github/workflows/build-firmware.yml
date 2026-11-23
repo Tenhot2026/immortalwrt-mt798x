@@ -4,10 +4,24 @@ on:
   push:
     branches:
       - openwrt-21.02
-    paths-ignore:
-      - '**/*.md'
-      - 'docs/**'
-      - '.github/ISSUE_TEMPLATE/**'
+    paths:
+      - '.github/workflows/build-firmware.yml'
+      - '.gitattributes'
+      - 'BSDmakefile'
+      - 'Config.in'
+      - 'Makefile'
+      - 'feeds.conf.default'
+      - 'rules.mk'
+      - 'config/**'
+      - 'defconfig/**'
+      - 'dl/**'
+      - 'include/**'
+      - 'package/**'
+      - 'scripts/**'
+      - 'target/**'
+      - 'toolchain/**'
+      - 'tools/**'
+      - '!**/*.md'
   workflow_dispatch:
 
 permissions:
@@ -110,12 +124,19 @@ jobs:
       - name: Package firmware and software packages
         run: |
           target_dir="bin/targets/mediatek/${SUBTARGET}"
+          mkdir -p release-assets
+          shopt -s nullglob
           for image in factory sysupgrade; do
-            if ! compgen -G "${target_dir}/*-${PROFILE}-squashfs-${image}.bin" > /dev/null; then
-              echo "::error::Missing ${image} firmware for ${DEVICE}."
+            files=("${target_dir}"/*-"${PROFILE}-squashfs-${image}.bin")
+            if (( ${#files[@]} != 1 )) || [[ ! -s "${files[0]}" ]]; then
+              echo "::error::Expected one non-empty ${image} image for ${DEVICE}."
               exit 1
             fi
+            cp -- "${files[0]}" release-assets/
           done
+          cp ci-logs/build-info.txt "release-assets/${DEVICE}-build-info.txt"
+          (cd release-assets && sha256sum -- *.bin > "${DEVICE}-sha256sums.txt")
+
           mkdir -p artifacts "$target_dir/build-metadata"
           cp ci-logs/build.config ci-logs/diffconfig ci-logs/build-info.txt \
             ci-logs/feeds.conf.default "$target_dir/build-metadata/"
@@ -127,8 +148,8 @@ jobs:
             echo "### ${DEVICE} firmware"
             echo "Source commit: ${GITHUB_SHA}"
             echo
-            echo 'Download the firmware artifact below and extract the ZIP, then the tar.gz.'
-            echo 'The archive includes bin/ contents and build-metadata under the target directory.'
+            echo 'On openwrt-21.02, the Release provides the flashable .bin files after both builds succeed.'
+            echo 'The full build archive is available in Actions Artifacts.'
             echo
             echo 'Firmware files:'
             echo '```text'
@@ -145,6 +166,18 @@ jobs:
           compression-level: 0
           retention-days: 7
 
+      - name: Upload files for release
+        if: github.ref == 'refs/heads/openwrt-21.02'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          # Reuse a successful device's files when only failed jobs are rerun.
+          name: release-firmware-${{ matrix.device }}
+          path: release-assets/
+          if-no-files-found: error
+          overwrite: true
+          compression-level: 0
+          retention-days: 7
+
       - name: Upload build logs
         if: ${{ always() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -153,3 +186,43 @@ jobs:
           path: ci-logs/
           if-no-files-found: warn
           retention-days: 7
+
+  release:
+    name: Publish firmware
+    needs: build
+    if: github.ref == 'refs/heads/openwrt-21.02'
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download release files
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: release-firmware-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Verify and publish firmware
+        shell: bash
+        working-directory: release-assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          shopt -s nullglob
+          images=(*.bin)
+          checksums=(*-sha256sums.txt)
+          build_info=(*-build-info.txt)
+          if (( ${#images[@]} != 4 || ${#checksums[@]} != 2 || ${#build_info[@]} != 2 )); then
+            echo '::error::Missing firmware, checksums or build information for one or more devices.'
+            exit 1
+          fi
+          sha256sum --check --strict -- "${checksums[@]}"
+
+          tag="firmware-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          gh release create "$tag" "${images[@]}" "${checksums[@]}" "${build_info[@]}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Tenhot firmware #${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT} (${GITHUB_SHA:0:12})" \
+            --notes "Source commit: ${GITHUB_SHA}. Build: ${run_url}" \
+            --prerelease
