@@ -225,4 +225,4 @@ jobs:
             --target "$GITHUB_SHA" \
             --title "Tenhot firmware #${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT} (${GITHUB_SHA:0:12})" \
             --notes "Source commit: ${GITHUB_SHA}. Build: ${run_url}" \
-            --prerelease
+            --latest
